@@ -16,7 +16,16 @@ module top #(
     parameter V_PULSE  = 2,
     parameter V_BACK   = 33,
     
-    parameter COLOURW  = 4 
+    parameter COLOURW  = 4,
+
+    // Circle parameters
+    parameter CIRCLE_RADIUS   = 20,
+    parameter CIRCLE_STEP     = 2,
+    parameter CIRCLE_MOVE_DIV = 300_000,
+
+    // Square parameters
+    parameter SQUARE_SIZE     = 80,
+    parameter SQUARE_STEP     = 4
 ) (
     input  logic        sys_clock,
 
@@ -40,8 +49,6 @@ module top #(
     logic resetn;
     assign resetn = sw[15];
 
-    // once-per-frame pulse, derived from the vga_controller's counters
-
     //total width of the horizontal and vertical counters
     localparam H_TOTAL = H_ACTIVE + H_FRONT + H_PULSE + H_BACK;
     localparam V_TOTAL = V_ACTIVE + V_FRONT + V_PULSE + V_BACK;
@@ -51,12 +58,10 @@ module top #(
     logic [$clog2(V_TOTAL)-1:0] pix_y;
     logic [3*COLOURW-1:0]       pixel_colour;
 
-    //is 1 every time the pix_x and pix_y are at the last pixel (ie end of frame)
-     wire frame_tick = (pix_x == H_TOTAL - 1) && (pix_y == V_TOTAL - 1);
+    wire [3*COLOURW-1:0]        square_colour;
 
-    //localparam RADIUS   = 20;
-    //localparam STEP     = 2;
-    //localparam MOVE_DIV = 300000;
+    //is 1 every time the pix_x and pix_y are at the last pixel (ie end of frame)
+    wire frame_tick = (pix_x == H_TOTAL - 1) && (pix_y == V_TOTAL - 1);
 
     //pll for ckl gen
     logic pix_clk;
@@ -66,47 +71,27 @@ module top #(
         .sys_clock  (sys_clock)
     );
 
-    // moving_circle_gen #(
-    //     .H_ACTIVE   (H_ACTIVE),
-    //     .V_ACTIVE   (V_ACTIVE),
-    //     .COLOURW    (COLOURW),
-    //     .RADIUS     (RADIUS),
-    //     .STEP       (STEP),
-    //     .MOVE_DIV   (MOVE_DIV)
-    // ) u_bouncing_circle_gen (
-    //     .pix_clk    (pix_clk),
-    //     .rst_ni     (resetn),
-    //     .x_i        (pix_x),
-    //     .y_i        (pix_y),
-
-    //     .manual_i   (sw[0]),     // 0 = DVD bounce, 1 = button control
-    //     .btn_up_i   (btnU),
-    //     .btn_down_i (btnD),
-    //     .btn_left_i (btnL),
-    //     .btn_right_i(btnR),
-
-    //     .colour_o   (pixel_colour)
-    // );
-
     moving_square_gen #(
-        .H_ACTIVE (H_ACTIVE),
-        .V_ACTIVE (V_ACTIVE),
+        .H_ACTIVE   (H_ACTIVE),
+        .V_ACTIVE   (V_ACTIVE),
 
-        .COLOURW  (COLOURW),
-
-        .SQ_SIZE  (80),
-        .STEP     (4)
-    ) u_square (
+        .COLOURW    (COLOURW),
+        .SQ_SIZE    (SQUARE_SIZE),
+        .STEP       (SQUARE_STEP)
+    ) u_bouncing_square_gen (
         .pix_clk    (pix_clk),
         .rst_ni     (resetn),
-        .frame_tick (frame_tick),
 
+        .frame_tick (frame_tick),      // square uses frame_tick for movement
         .x_i        (pix_x),
         .y_i        (pix_y),
 
-        .colour_o   (pixel_colour)
+        .colour_o   (square_colour)
     );
 
+    // -----------------------------------------------------------------
+    // VGA controller
+    // -----------------------------------------------------------------
     vga_controller #(
         .H_ACTIVE   (H_ACTIVE),
         .H_FRONT    (H_FRONT),
@@ -123,7 +108,7 @@ module top #(
         .pix_clk    (pix_clk),
         .rst_ni     (resetn),
 
-        .colour_i   (pixel_colour),
+        .colour_i   (square_colour),
 
         .next_x_o   (pix_x),
         .next_y_o   (pix_y),

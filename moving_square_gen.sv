@@ -71,6 +71,6 @@ module moving_square_gen #(
     wire inside_square = (x_i >= sq_x) && (x_i < sq_x + SQ_SIZE) && (y_i >= sq_y) && (y_i < sq_y + SQ_SIZE);
 
     //assign colour output             (square colour)      (backgound colour)
-    assign colour_o = inside_square ? {4'hF, 4'h0, 4'hF} : {4'hA, 4'hD, 4'h0};
+    assign colour_o = inside_square ? {4'hF, 4'h0, 4'h0} : {4'hF, 4'hF, 4'hF};
 
 endmodule
