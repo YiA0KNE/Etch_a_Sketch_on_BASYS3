@@ -8,20 +8,20 @@
 
 module top #(
     // Video timing parameters.
-    parameter int H_ACTIVE    = 640,    // Horizontal active video width (pixels)
-    parameter int H_FRONT     = 16,     // Horizontal front porch width (pixels)
-    parameter int H_PULSE     = 96,     // Horizontal sync pulse width (pixels)
-    parameter int H_BACK      = 48,     // Horizontal back porch width (pixels)
+    parameter int H_ACTIVE    = 800,    // Horizontal active video width (pixels)
+    parameter int H_FRONT     = 40,     // Horizontal front porch width (pixels)
+    parameter int H_PULSE     = 128,     // Horizontal sync pulse width (pixels)
+    parameter int H_BACK      = 88,     // Horizontal back porch width (pixels)
     
-    parameter int V_ACTIVE    = 480,    // Vertical active video height (lines)
-    parameter int V_FRONT     = 11,     // Vertical front porch height (lines)
-    parameter int V_PULSE     = 2,      // Vertical sync pulse height (lines)
-    parameter int V_BACK      = 33,     // Vertical back porch height (lines)
+    parameter int V_ACTIVE    = 600,    // Vertical active video height (lines)
+    parameter int V_FRONT     = 1,     // Vertical front porch height (lines)
+    parameter int V_PULSE     = 4,      // Vertical sync pulse height (lines)
+    parameter int V_BACK      = 23,     // Vertical back porch height (lines)
 
     // Data-path parameters.
     parameter int COLOURW     = 4,      // Bit width of each RGB channel
     parameter int START_SIZE  = 4,      // Initial brush/cursor size
-    parameter int NUM_HUES    = 16,     // Number of hue settings in colour picker
+    parameter int NUM_HUES    = 4,     // Number of hue settings in colour picker
     parameter int NUM_SATS    = 4,      // Number of saturation settings in colour picker
 
     // Split-screen geometry.
