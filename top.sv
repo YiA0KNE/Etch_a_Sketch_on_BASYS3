@@ -1,124 +1,314 @@
-// Format            Pixel Clock(MHz)    H_ACTIVE    H_FRONT    H_SYNC    H_BACK  |  V_ACTIVE    V_FRONT    V_SYNC    V_BACK
-//  640x480@60Hz     25.175              640         16         96        48      |  480         11         2         31
-//  800x600@60Hz     40.000              800         40         128       88      |  600         1          4         23
-//  1024x768@60Hz    65.000              1024        24         136       160     |  768         3          6         29
+////////////////////////////////////////////////////////////////////////////////
+// top.sv
+// Top-level for the BASYS 3 drawing interface.
+//
+// A PLL generates the VGA pixel clock. The screen is split into a left tool
+// panel and a right drawing canvas, both fed from the same VGA controller.
+////////////////////////////////////////////////////////////////////////////////
 
 module top #(
-
-    //Video Timing Parameters 
-    parameter H_ACTIVE = 640,
-    parameter H_FRONT  = 16,
-    parameter H_PULSE  = 96,
-    parameter H_BACK   = 48,
-
-    parameter V_ACTIVE = 480,
-    parameter V_FRONT  = 11,      
-    parameter V_PULSE  = 2,
-    parameter V_BACK   = 33,
+    // Video timing parameters.
+    parameter int H_ACTIVE    = 640,    // Horizontal active video width (pixels)
+    parameter int H_FRONT     = 16,     // Horizontal front porch width (pixels)
+    parameter int H_PULSE     = 96,     // Horizontal sync pulse width (pixels)
+    parameter int H_BACK      = 48,     // Horizontal back porch width (pixels)
     
-    parameter COLOURW  = 4,
+    parameter int V_ACTIVE    = 480,    // Vertical active video height (lines)
+    parameter int V_FRONT     = 11,     // Vertical front porch height (lines)
+    parameter int V_PULSE     = 2,      // Vertical sync pulse height (lines)
+    parameter int V_BACK      = 33,     // Vertical back porch height (lines)
 
-    // Circle parameters
-    parameter CIRCLE_RADIUS   = 20,
-    parameter CIRCLE_STEP     = 2,
-    parameter CIRCLE_MOVE_DIV = 300_000,
+    // Data-path parameters.
+    parameter int COLOURW     = 4,      // Bit width of each RGB channel
+    parameter int START_SIZE  = 4,      // Initial brush/cursor size
+    parameter int NUM_HUES    = 16,     // Number of hue settings in colour picker
+    parameter int NUM_SATS    = 4,      // Number of saturation settings in colour picker
 
-    // Square parameters
-    parameter SQUARE_SIZE     = 80,
-    parameter SQUARE_STEP     = 4
+    // Split-screen geometry.
+    parameter int SPLIT       = 30,     // Left zone width as % of H_ACTIVE
+    parameter int LINEW       = 1,      // Separator line width (pixels)
+
+    // UI scale.
+    parameter int UI_SCALE    = 4       // Pixel scaling factor for UI glyphs
 ) (
-    input  logic        sys_clock,
+    input  logic        sys_clock,      // Board 100 MHz system clock
 
-    input  logic [15:0] sw,
+    input  logic [15:0] sw,             // Slide switches
+    output logic [15:0] led,            // LEDs for debug/mouse state
 
-    input  logic        btnC,   // centre
-    input  logic        btnU,   // up
-    input  logic        btnL,   // left
-    input  logic        btnR,   // right
-    input  logic        btnD,   // down
+    input  logic        btnC,           // Centre button
+    input  logic        btnU,           // Up button
+    input  logic        btnL,           // Left button
+    input  logic        btnR,           // Right button
+    input  logic        btnD,           // Down button
 
-    output logic        Hsync,
-    output logic        Vsync,
+    // PS/2 mouse pins.
+    inout  logic        PS2Clk,         // PS/2 mouse clock line
+    inout  logic        PS2Data,        // PS/2 mouse data line
 
-    output logic [3:0]  vgaRed,
-    output logic [3:0]  vgaBlue,
-    output logic [3:0]  vgaGreen
+    output logic        Hsync,          // VGA horizontal sync output
+    output logic        Vsync,          // VGA vertical sync output
+
+    output logic [3:0]  vgaRed,         // VGA red channel
+    output logic [3:0]  vgaBlue,        // VGA blue channel
+    output logic [3:0]  vgaGreen        // VGA green channel
 );
 
-    //reset activ low
-    logic resetn;
+    // -------------------------------------------------------------------------
+    // Local parameters
+    // -------------------------------------------------------------------------
+    localparam int H_TOTAL = H_ACTIVE + H_FRONT + H_PULSE + H_BACK;   // Total horizontal scanline length
+    localparam int V_TOTAL = V_ACTIVE + V_FRONT + V_PULSE + V_BACK;   // Total vertical frame length
+
+    localparam int CANVAS_W = (H_ACTIVE * (100 - SPLIT)) / 100 - LINEW; // Drawing canvas width (pixels)
+    localparam int CANVAS_H = V_ACTIVE;                                 // Drawing canvas height (pixels)
+
+    // -------------------------------------------------------------------------
+    // Internal declarations
+    // -------------------------------------------------------------------------
+
+    // Clock and reset
+    logic resetn;               // Active-low reset from switch 15
+    logic pix_clk;              // Pixel clock from PLL/MMCM wrapper
+
+    // Global pixel coordinates from the VGA controller.
+    logic [$clog2(H_TOTAL)-1:0] next_x_o;
+    logic [$clog2(V_TOTAL)-1:0] next_y_o;
+
+    // One-cycle pulse at the very last pixel of a frame.
+    logic frame_tick;
+
+    // Local coordinates for the left and right zones.
+    logic [$clog2(H_TOTAL)-1:0] next_x_left_o;
+    logic [$clog2(H_TOTAL)-1:0] next_x_right_o;
+    logic [$clog2(V_TOTAL)-1:0] next_y_left_o;
+    logic [$clog2(V_TOTAL)-1:0] next_y_right_o;
+
+    // RGB streams from the two content generators.
+    logic [3*COLOURW-1:0] vga_colour;
+    logic [3*COLOURW-1:0] user_interface;
+    logic [3*COLOURW-1:0] drawing_interface;
+
+    // UI / drawing control.
+    logic enable;
+    logic [2:0] ctrl;
+
+    // Tool-panel settings.
+    logic [3:0] size;
+    logic       cursor_shape;
+    logic [$clog2(NUM_HUES)-1:0] hue_panel;
+    logic [$clog2(NUM_SATS)-1:0] sat_panel;
+
+    // PS/2 mouse signals.
+    logic [11:0] mouse_xpos;
+    logic [11:0] mouse_ypos;
+    logic        mouse_left;
+    logic        mouse_right;
+    logic        mouse_middle;
+    logic        mouse_new_event;
+
+    // Reset edge detector for setmax pulse.
+    logic resetn_d;
+    logic setmax_pulse;
+
+    // -------------------------------------------------------------------------
+    // Combinational assignments
+    // -------------------------------------------------------------------------
+
+    // Active-low reset from switch 15.
     assign resetn = sw[15];
 
-    //total width of the horizontal and vertical counters
-    localparam H_TOTAL = H_ACTIVE + H_FRONT + H_PULSE + H_BACK;
-    localparam V_TOTAL = V_ACTIVE + V_FRONT + V_PULSE + V_BACK;
+    // Frame complete pulse: last pixel of the active frame.
+    assign frame_tick = (next_x_o == H_TOTAL - 1) && (next_y_o == V_TOTAL - 1);
 
-    //auto scale pixel coords
-    logic [$clog2(H_TOTAL)-1:0] pix_x;
-    logic [$clog2(V_TOTAL)-1:0] pix_y;
-    logic [3*COLOURW-1:0]       pixel_colour;
+    // One-shot pulse on the rising edge of resetn.
+    assign setmax_pulse = resetn && !resetn_d;
 
-    wire [3*COLOURW-1:0]        square_colour;
+    // LED debug: show mouse state.
+    assign led = {mouse_new_event, mouse_middle, mouse_right, mouse_left, mouse_xpos};
 
-    //is 1 every time the pix_x and pix_y are at the last pixel (ie end of frame)
-    wire frame_tick = (pix_x == H_TOTAL - 1) && (pix_y == V_TOTAL - 1);
+    // -------------------------------------------------------------------------
+    // Sequential logic
+    // -------------------------------------------------------------------------
 
-    //pll for ckl gen
-    logic pix_clk;
+    // Delay reset by one cycle to detect its rising edge.
+    always_ff @(posedge pix_clk) begin
+        resetn_d <= resetn;
+    end
+
+    // -------------------------------------------------------------------------
+    // Submodule instantiations
+    // -------------------------------------------------------------------------
+
+    // Pixel clock generator.
     clk_vga_wrapper u_clk_vga_wrapper (
         .clk_out1_0 (pix_clk),
         .reset      (resetn),
         .sys_clock  (sys_clock)
     );
 
-    moving_square_gen #(
-        .H_ACTIVE   (H_ACTIVE),
-        .V_ACTIVE   (V_ACTIVE),
+    // Button encoder: debounce, edge detect, toggle enable, encode control bus.
+    encoder u_encoder (
+        .clk     (pix_clk),
+        .reset_n (resetn),
 
-        .COLOURW    (COLOURW),
-        .SQ_SIZE    (SQUARE_SIZE),
-        .STEP       (SQUARE_STEP)
-    ) u_bouncing_square_gen (
-        .pix_clk    (pix_clk),
-        .rst_ni     (resetn),
-
-        .frame_tick (frame_tick),      // square uses frame_tick for movement
-        .x_i        (pix_x),
-        .y_i        (pix_y),
-
-        .colour_o   (square_colour)
+        .btnC    (btnC),
+        .btnU    (btnU),
+        .btnL    (btnL),
+        .btnR    (btnR),
+        .btnD    (btnD),
+        
+        .enable  (enable),
+        .ctrl    (ctrl)
     );
 
-    // -----------------------------------------------------------------
-    // VGA controller
-    // -----------------------------------------------------------------
+    // PS/2 mouse tracker.
+    ps2_mouse #(
+        .SYSCLK_HZ         (25_175_000),
+        .CHECK_PERIOD_MS   (500),
+        .TIMEOUT_PERIOD_MS (100)
+    ) u_ps2_mouse (
+        .clk        (pix_clk),
+        .rst_n      (resetn),
+
+        .ps2_clk    (PS2Clk),
+        .ps2_data   (PS2Data),
+
+        .setmax_val (12'hFFF),        // was: (CANVAS_W - 1)
+        .setmax_x   (setmax_pulse),   // pulse once after reset
+        .setmax_y   (setmax_pulse),   // pulse once after reset
+
+        .setx       (1'b0),
+        .sety       (1'b0),
+
+        .xpos       (mouse_xpos),
+        .ypos       (mouse_ypos),
+
+        .left_btn   (mouse_left),
+        .right_btn  (mouse_right),
+        .middle_btn (mouse_middle),
+
+        .new_event  (mouse_new_event)
+    );
+
+    // Left zone: tool panel.
+    user_interface #(
+        .HORIZONTAL (u_vga_split_screen.LEFT_W),
+        .VERTICAL   (V_ACTIVE),
+
+        .UI_SCALE   (UI_SCALE),
+        .NUM_HUES   (NUM_HUES),
+        .NUM_SATS   (NUM_SATS)
+    ) u_user_interface (
+        .clk                (pix_clk),
+        .rst_n              (resetn),
+
+        .enable             (enable),
+        .control            (ctrl),
+
+        .x                  (next_x_left_o),
+        .y                  (next_y_left_o),
+
+        .pixel_colour       (user_interface),
+
+        .size_panel         (size),
+        .cursor_shape_panel (cursor_shape),
+        .hue_panel          (hue_panel),
+        .sat_panel          (sat_panel)
+    );
+
+    // Right zone: drawing canvas.
+    drawing_interface #(
+        .HORIZONTAL (u_vga_split_screen.RIGHT_W),
+        .VERTICAL   (V_ACTIVE),
+        .COLOURW    (COLOURW),
+        .START_SIZE (START_SIZE),
+        .NUM_HUES   (NUM_HUES),
+        .NUM_SATS   (NUM_SATS)
+    ) u_drawing_interface (
+        .clk                (pix_clk),
+        .rst_n              (resetn),
+        .enable             (enable),
+
+        .hide_cursor        (sw[0]),
+        .frame_tick         (frame_tick),
+        .draw_enable        (mouse_left),
+
+        .x                  (next_x_right_o),
+        .y                  (next_y_right_o),
+
+        .mouse_xpos         (mouse_xpos),
+        .mouse_ypos         (mouse_ypos),
+        .mouse_new_event    (mouse_new_event),
+
+        .hue_sel            (hue_panel),
+        .sat_sel            (sat_panel),
+
+        .size_cursor        (size),
+        .cursor_shape       (cursor_shape),
+        .colour             (drawing_interface)
+    );
+
+    // Split the screen into left panel | separator | right canvas.
+    vga_split_screen #(
+        .COLOURW          (COLOURW),
+        .H_ACTIVE         (H_ACTIVE),
+        .H_FRONT          (H_FRONT),
+        .H_PULSE          (H_PULSE),
+        .H_BACK           (H_BACK),
+
+        .V_ACTIVE         (V_ACTIVE),
+        .V_FRONT          (V_FRONT),
+        .V_PULSE          (V_PULSE),
+        .V_BACK           (V_BACK),
+        .SPLIT_PCT        (SPLIT),
+
+        .LINE_W           (LINEW),
+        .SEPARATOR_COLOUR ('hFFF)
+    ) u_vga_split_screen (
+        .next_x_i       (next_x_o),
+        .next_y_i       (next_y_o),
+
+        .colour_left_i  (user_interface),
+        .colour_right_i (drawing_interface),
+
+        .next_x_left_o  (next_x_left_o),
+        .next_y_left_o  (next_y_left_o),
+
+        .next_x_right_o (next_x_right_o),
+        .next_y_right_o (next_y_right_o),
+
+        .colour_o       (vga_colour)
+    );
+
+    // VGA timing and RGB output.
     vga_controller #(
-        .H_ACTIVE   (H_ACTIVE),
-        .H_FRONT    (H_FRONT),
-        .H_PULSE    (H_PULSE),
-        .H_BACK     (H_BACK),
+        .H_ACTIVE (H_ACTIVE),
+        .H_FRONT  (H_FRONT),
+        .H_PULSE  (H_PULSE),
+        .H_BACK   (H_BACK),
 
-        .V_ACTIVE   (V_ACTIVE),
-        .V_FRONT    (V_FRONT),
-        .V_PULSE    (V_PULSE),
-        .V_BACK     (V_BACK),
+        .V_ACTIVE (V_ACTIVE),
+        .V_FRONT  (V_FRONT),
+        .V_PULSE  (V_PULSE),
+        .V_BACK   (V_BACK),
 
-        .COLOURW    (COLOURW)
+        .COLOURW  (COLOURW)
     ) u_vga_controller (
-        .pix_clk    (pix_clk),
-        .rst_ni     (resetn),
+        .pix_clk  (pix_clk),
+        .rst_ni   (resetn),
 
-        .colour_i   (square_colour),
+        .colour_i (vga_colour),
 
-        .next_x_o   (pix_x),
-        .next_y_o   (pix_y),
+        .next_x_o (next_x_o),
+        .next_y_o (next_y_o),
 
-        .hsynct_o   (Hsync),
-        .vsynct_o   (Vsync),
+        .hsynct_o (Hsync),
+        .vsynct_o (Vsync),
 
-        .red_o      (vgaRed),
-        .green_o    (vgaGreen),
-        .blue_o     (vgaBlue)
+        .red_o    (vgaRed),
+        .green_o  (vgaGreen),
+        .blue_o   (vgaBlue)
     );
 
 endmodule

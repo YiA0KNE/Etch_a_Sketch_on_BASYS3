@@ -1,76 +1,69 @@
+// moving_square_gen.sv — Bouncing square demo generator.
+//
+// A coloured square bounces horizontally and vertically inside the active
+// display area. Horizontal and vertical state are kept in separate always_ff
+// blocks so each contains only two registered signals.
+
 module moving_square_gen #(
-    parameter H_ACTIVE = 640,
-    parameter V_ACTIVE = 480,
-
-    parameter COLOURW  = 4,
-    parameter SQ_SIZE  = 60,
-
-    parameter STEP     = 4 // pixels moved per frame
-)(
-    input  wire                             pix_clk,
-    input  wire                             rst_ni,
-    input  wire                             frame_tick, //pulse once per full frame
-
-    input  wire     [$clog2(H_ACTIVE)-1:0]  x_i, //next X pixel coords
-    input  wire     [$clog2(V_ACTIVE)-1:0]  y_i, //next Y pixel coords
-
-    output logic    [3*COLOURW-1:0]         colour_o //RRRRGGGGBBBB
+    parameter int H_ACTIVE = 640,   // horizontal resolution
+    parameter int V_ACTIVE = 480,   // vertical resolution
+    parameter int COLOURW  = 4,     // bits per colour channel
+    parameter int SQ_SIZE  = 60,    // square edge length in pixels
+    parameter int STEP     = 4      // pixels moved per frame
+) (
+    input  wire                        pix_clk,    // pixel clock
+    input  wire                        rst_ni,     // active-low reset
+    input  wire                        frame_tick, // one pulse per full frame
+    input  wire [$clog2(H_ACTIVE)-1:0] x_i,        // current pixel X
+    input  wire [$clog2(V_ACTIVE)-1:0] y_i,        // current pixel Y
+    output logic [3*COLOURW-1:0]       colour_o    // RGB output
 );
 
-    //max X, Y positions so it doesn't clip off screen 
-    localparam SQ_X_MAX = H_ACTIVE - SQ_SIZE; 
-    localparam SQ_Y_MAX = V_ACTIVE - SQ_SIZE;
+    // Maximum top-left coordinates so the square never leaves the screen.
+    localparam int SQ_X_MAX = H_ACTIVE - SQ_SIZE;
+    localparam int SQ_Y_MAX = V_ACTIVE - SQ_SIZE;
 
-    //square position
-    logic [$clog2(H_ACTIVE)-1:0] sq_x;  
-    logic [$clog2(V_ACTIVE)-1:0] sq_y; 
+    // Horizontal motion state.
+    logic [$clog2(H_ACTIVE)-1:0] sq_x;   // square left edge
+    logic                        dir_x;  // 1 = right, 0 = left
+    logic                        next_dir_x;
 
-    //direction of movement
-    logic dir_x, dir_y; //0 = left/up, 1 = right/down
-
-    //change direction if we overshoot the edge
-    logic next_dir_x, next_dir_y;
-
-    //horizontal position / bounce
-    always @(posedge pix_clk) begin
+    always_ff @(posedge pix_clk) begin
         if (!rst_ni) begin
-            sq_x  <= 0; //reset square to left edge
-            dir_x <= 1'b1; //reset direction to moving right
+            sq_x  <= '0;
+            dir_x <= 1'b1;
         end else if (frame_tick) begin
-            
-            next_dir_x = dir_x; //default: keep current direction
-
-            //flip direction before we would overshoot either edge
+            // Decide direction for the next step before moving.
+            next_dir_x = dir_x;
             if (dir_x && (sq_x + STEP > SQ_X_MAX)) next_dir_x = 1'b0;
             else if (!dir_x && (sq_x < STEP))      next_dir_x = 1'b1;
-
-            dir_x <= next_dir_x; //store direction for next frame
-            sq_x  <= next_dir_x ? sq_x + STEP : sq_x - STEP; //step position using new direction
+            dir_x <= next_dir_x;
+            sq_x  <= next_dir_x ? (sq_x + STEP) : (sq_x - STEP);
         end
     end
 
-    //vertical position / bounce
-    always @(posedge pix_clk) begin
-        if (!rst_ni) begin
-            sq_y  <= 0; //reset square to top edge
-            dir_y <= 1'b1; //reset direction to moving down
-        end else if (frame_tick) begin
-            
-            next_dir_y = dir_y; //default: keep current direction
+    // Vertical motion state.
+    logic [$clog2(V_ACTIVE)-1:0] sq_y;   // square top edge
+    logic                        dir_y;  // 1 = down, 0 = up
+    logic                        next_dir_y;
 
-            //flip direction before we would overshoot either edge
+    always_ff @(posedge pix_clk) begin
+        if (!rst_ni) begin
+            sq_y  <= '0;
+            dir_y <= 1'b1;
+        end else if (frame_tick) begin
+            next_dir_y = dir_y;
             if (dir_y && (sq_y + STEP > SQ_Y_MAX)) next_dir_y = 1'b0;
             else if (!dir_y && (sq_y < STEP))      next_dir_y = 1'b1;
-
-            dir_y <= next_dir_y; //store direction for next frame
-            sq_y  <= next_dir_y ? sq_y + STEP : sq_y - STEP; //step position using new direction
+            dir_y <= next_dir_y;
+            sq_y  <= next_dir_y ? (sq_y + STEP) : (sq_y - STEP);
         end
     end
 
-    //determine if the current pixel is inside the square
-    wire inside_square = (x_i >= sq_x) && (x_i < sq_x + SQ_SIZE) && (y_i >= sq_y) && (y_i < sq_y + SQ_SIZE);
+    // Pixel-in-square test and colour mux.
+    wire inside_square = (x_i >= sq_x) && (x_i < sq_x + SQ_SIZE) &&
+                         (y_i >= sq_y) && (y_i < sq_y + SQ_SIZE);
 
-    //assign colour output             (square colour)      (backgound colour)
-    assign colour_o = inside_square ? {4'hF, 4'h0, 4'h0} : {4'hF, 4'hF, 4'hF};
+    assign colour_o = inside_square ? {4'hF, 4'h0, 4'h0} : {4'hF, 4'h0, 4'hF};
 
 endmodule
